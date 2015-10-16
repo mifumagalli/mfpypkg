@@ -1,0 +1,197 @@
+#! /usr/bin/env python2.7
+ 
+"""
+    Simple python code to generate RGB images of legus cluster 
+    Copyright (C) 2015  Michele Fumagalli michele.fumagalli@durham.ac.uk
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+"""
+
+
+import sys
+import argparse
+import numpy as np
+from astropy.io import fits
+from astropy.io import ascii
+import os
+import matplotlib.pyplot as plt
+
+class ClusterRGB():
+
+    """ This is the cklass that does the job """
+ 
+    def __init__(self,args):
+
+        """ Init the class with user paramaters """
+
+        #grab the user paramaters 
+        self.userparam=args
+        #print self.userparam.catalogue
+        
+        #define a set of private parameters for later use 
+        self.rgbranges_one={"B":[0.005, 1],"G":[0.01, 3],"R":[0.04, 5]}
+        self.rgbranges_two={"B":[0.005, 1.4],"G":[0.01, 10],"R":[0.04, 15]}
+        self.rgbranges_three={"B":[0.005, 5],"G":[0.01, 20],"R":[0.04, 40]}
+
+    def mainloop(self):
+
+        """ Run the main loop """
+
+        #first parse the list 
+        xylist = ascii.read(self.userparam.catalogue,names=("x","y")) 
+
+        #make sure output space exist 
+        if not os.path.exists(self.userparam.imgout):
+            os.makedirs(self.userparam.imgout)
+            
+        #now open fits for each channel 
+        self.Bfits=fits.open("{}/{}".format(self.userparam.datapath,self.userparam.Bchannel))
+        self.Gfits=fits.open("{}/{}".format(self.userparam.datapath,self.userparam.Gchannel))
+        self.Rfits=fits.open("{}/{}".format(self.userparam.datapath,self.userparam.Rchannel))
+
+        #now loop over each cluster 
+        for x,y in xylist:
+            self.processcluster(x,y)
+           
+        #close in the end 
+        self.Bfits.close()
+        self.Gfits.close()
+        self.Rfits.close()
+
+    def processcluster(self,x,y):
+
+        """ 
+
+        Process individual clusters
+
+        To get correct geometry, need to invert x,y 
+
+        """
+
+        #first cutout desired length 
+        #[this will have weird behaviour at edges]
+        deltax=self.userparam.xpix/2
+        deltay=self.userparam.ypix/2
+        self.Bcut=self.Bfits[0].data[y-deltay:y+deltay,x-deltax:x+deltax]
+        self.Gcut=self.Gfits[0].data[y-deltay:y+deltay,x-deltax:x+deltax]
+        self.Rcut=self.Rfits[0].data[y-deltay:y+deltay,x-deltax:x+deltax]
+
+        #next init image 
+        fig=plt.figure(figsize=(15,5))
+        
+        #build rgb for each desired contrast 
+        rgb1=self.makergb(self.rgbranges_one)
+        rgb2=self.makergb(self.rgbranges_two)
+        rgb3=self.makergb(self.rgbranges_three)
+
+        #make space for 3 images with different contrasts 
+        ax1=plt.subplot(1,3,1)
+        is1=ax1.imshow(rgb1,origin='lower')
+        ax1.set_xticks([]) 
+        ax1.set_yticks([]) 
+
+        ax2=plt.subplot(1,3,2)
+        is2=ax2.imshow(rgb2,origin='lower')
+        ax2.set_xticks([]) 
+        ax2.set_yticks([]) 
+
+        ax3=plt.subplot(1,3,3)
+        is3=ax3.imshow(rgb3,origin='lower')
+        ax3.set_xticks([]) 
+        ax3.set_yticks([]) 
+
+        #save, clear and close 
+        fig.set_tight_layout(True)
+        fig.savefig('{}/cls_{}_{}.jpeg'.format(self.userparam.imgout,x,y))
+        plt.clf()
+        plt.close()
+        
+
+    def makergb(self,rgbrange):
+        
+        """ Map the three cuts into RGB image """
+        
+        #create space for rgb
+        img = np.zeros((self.Bcut.shape[0], self.Bcut.shape[1], 3), dtype=float)
+
+        #map each channel and append 
+        img[:,:,0]=self.logmap(self.Rcut,rgbrange["R"])
+        img[:,:,1]=self.logmap(self.Gcut,rgbrange["G"])
+        img[:,:,2]=self.logmap(self.Bcut,rgbrange["B"])
+
+        return img        
+
+    def logmap(self,fits,chanrange):
+
+        """ 
+        Map a fits into a log scale 
+        Follow basic idea of this code:
+        http://www.astrobetter.com/wiki/tiki-index.php?page=RGB+Images+with+matplotlib
+
+        """
+        #make a copy to avoid overwrite 
+        data=np.nan_to_num(np.array(fits, copy=True))
+    
+        #interval in log
+	factor = 1.*(np.log10(chanrange[1])-np.log10(chanrange[0]))
+
+        #find data above/below range
+        indx0 = np.where(data < chanrange[0])
+	indx1 = np.where((data >= chanrange[0]) & (data <= chanrange[1]))
+	indx2 = np.where(data > chanrange[1])
+	data[indx0] = 0.0
+	data[indx2] = 1.0
+
+        #map log strecth in 0-1 range
+	try :
+		data[indx1] = (np.log10(data[indx1])-np.log10(chanrange[0]))/factor
+	except :
+		print "Error on log10!"
+        
+        return data
+    
+
+def clustersrgb_main(argv):
+
+    """ 
+
+    This is the main, that controls the program flow. 
+    For help on usage usage, type 
+    > python cluster_rgb -h
+
+    """
+    
+    #process the runtime parameter 
+    parser = argparse.ArgumentParser(description='Generate RGB for clusters')
+    parser.add_argument('catalogue', help="Input cluster catalogue (X,Y pixels)")
+    parser.add_argument('Bchannel', help="Fits Bchannel (336W)")
+    parser.add_argument('Gchannel', help="Fits Gchannel (555W)")
+    parser.add_argument('Rchannel', help="Fits Rchannel (814WW)")
+
+    #optional arguments
+    parser.add_argument('--datapath', help="Path of fits files",default="./")
+    parser.add_argument('--imgout', help="Path for output",default="rgbimg")
+    parser.add_argument('--xpix', help="Size pixel X direction",type=int,default=50)
+    parser.add_argument('--ypix', help="Size pixel Y direction",type=int,default=50)
+    args=parser.parse_args(argv)
+
+    #Init the class
+    clsrgb=ClusterRGB(args)
+    #call the main loop
+    clsrgb.mainloop()
+
+if __name__ == "__main__":
+    #just call the main passing parameters
+    clustersrgb_main(sys.argv[1:])
